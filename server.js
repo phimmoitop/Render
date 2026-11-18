@@ -7,7 +7,7 @@ app.use(express.json());
 app.use(cors());
 
 // URL Web App của Google Apps Script (Thay link của bạn vào đây)
-const APPS_SCRIPT_URL = 'YOUR_GOOGLE_APPS_SCRIPT_WEB_APP_URL';
+const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwUVB8WymMzvP_N0-xifg2a-3Bs3Wjp5pfmnCqhhFR1nRwNrPOz9Cr2eF1FmiCmILFh/exec';
 
 // --- BỘ NHỚ RAM TẠM THỜI (IN-MEMORY CACHE) ---
 let memoryCache = {
