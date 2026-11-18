@@ -6,19 +6,19 @@ const app = express();
 app.use(express.json());
 app.use(cors());
 
-const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwbhvD2fULvgytKV9epC8_df4UOuzSAsrSi_uJNDyTJqfP0sYWK7Hb50iPenHkzudrg/exec';
+const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwbhvD2fULvgytKV9epC8_df4UOuzSAsrSi_uJNDyTJqfP0sYWK7Hb50iPenHkzudrg/exec'; // Nhớ điền link Apps Script của bạn vào đây
 
 // --- BỘ NHỚ RAM TẠM THỜI (IN-MEMORY CACHE) ---
 let memoryCache = {
     videos: {},       
     users: [],        
-    chats: [],        // Danh sách chat realtime (Lưu tối đa 50 câu mới nhất)
+    chats: [],        
     isLoaded: false
 };
 
 let hasChanges = false;
 
-// --- DANH SÁCH 30 CÂU CHAT DẠO NGẪU NHIÊN ---
+// --- KHO 30 CÂU CHAT DẠO ---
 const RANDOM_CHAT_POOL = [
     "Hôm nay thời tiết đẹp quá nhỉ!",
     "Có ai đang xem phim gì hay không giới thiệu với.",
@@ -40,7 +40,7 @@ const RANDOM_CHAT_POOL = [
     "Cho xin 1 nút like động viên nào ae.",
     "Hệ thống tự động sinh tin nhắn thông minh phết.",
     "Ai đoán xem bao giờ có bão nào?",
-    "Cười cái xem nào mn ơi :D",
+    "C cười cái xem nào mn ơi :D",
     "Web cá nhân mà xịn như web công ty lớn.",
     "Điểm danh anh em thiện lành nào!",
     "Ai rảnh vào đàm đạo chơi.",
@@ -52,85 +52,157 @@ const RANDOM_CHAT_POOL = [
     "Cố lên ae, sắp thành công rồi."
 ];
 
-// --- 1. TIẾN TRÌNH TỰ ĐỘNG SINH CÂU CHAT MỖI 10 PHÚT ---
+// --- BOT TỰ ĐỘNG CHAT MỖI 10 PHÚT ---
 setInterval(() => {
-    // Chọn ngẫu nhiên 1 câu từ kho chat dạo
     const randomMsg = RANDOM_CHAT_POOL[Math.floor(Math.random() * RANDOM_CHAT_POOL.length)];
-    
     const botChat = {
         sender: "🤖 Bot Hệ Thống",
         message: randomMsg,
         time: new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
     };
-
-    // Đưa lên đầu mảng chat
     memoryCache.chats.unshift(botChat);
+    if (memoryCache.chats.length > 50) memoryCache.chats.pop();
+}, 10 * 60 * 1000);
 
-    // Giới hạn tối đa chỉ lưu 50 câu chat mới nhất trên RAM
-    if (memoryCache.chats.length > 50) {
-        memoryCache.chats.pop(); // Xóa câu cũ nhất ở cuối mảng
-    }
-
-    console.log(`🤖 [Auto Chat]: ${randomMsg}`);
-}, 10 * 60 * 1000); // 10 phút = 10 * 60 * 1000 ms
-
-// --- 2. HÀM TẢI DỮ LIỆU TỪ SHEETS (GIỮ NGUYÊN) ---
+// --- HÀM TẢI DỮ LIỆU TỪ GOOGLE SHEETS VÀO RAM ---
 async function loadDataToMemory() {
     if (memoryCache.isLoaded) return;
+    console.log('🔄 Đang kéo dữ liệu từ Google Sheets vào RAM...');
     try {
         const response = await fetch(`${APPS_SCRIPT_URL}?action=getData`);
         const data = await response.json();
+        
         if (Array.isArray(data.videos)) {
             data.videos.forEach(item => {
                 memoryCache.videos[item.slug] = { banner: item.banner, link: item.link, view: Number(item.view) || 0 };
             });
         }
-        if (Array.isArray(data.users)) memoryCache.users = data.users;
+        if (Array.isArray(data.users)) {
+            memoryCache.users = data.users;
+        }
         memoryCache.isLoaded = true;
-    } catch (error) { console.error('Lỗi load:', error); }
+        console.log('✅ Đã nạp dữ liệu vào RAM thành công!');
+    } catch (error) {
+        console.error('❌ Lỗi load dữ liệu:', error);
+    }
 }
 
-// --- 3. CÁC API CHAT REALTIME ---
+// --- ĐỒNG BỘ ĐỊNH KỲ VỀ SHEETS ---
+setInterval(async () => {
+    if (!hasChanges) return;
+    try {
+        const payload = {
+            action: 'syncData',
+            videos: Object.keys(memoryCache.videos).map(slug => ({ slug, ...memoryCache.videos[slug] })),
+            users: memoryCache.users
+        };
+        await fetch(APPS_SCRIPT_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        hasChanges = false;
+        console.log('✅ Đồng bộ về Google Sheets thành công!');
+    } catch (error) {
+        console.error('❌ Lỗi đồng bộ:', error);
+    }
+}, 5 * 60 * 1000);
 
-// API Lấy danh sách tin nhắn chat hiện tại trên RAM
+// --- API ROUTES ---
+
+app.get('/', (req, res) => {
+    res.send({ status: 'Server is running', cacheLoaded: memoryCache.isLoaded });
+});
+
+// 1. API Đăng ký
+app.post('/api/register', async (req, res) => {
+    await loadDataToMemory();
+    const { username, password, Name } = req.body;
+
+    if (!username || !password) {
+        return res.status(400).json({ error: 'Thiếu tài khoản hoặc mật khẩu!' });
+    }
+
+    const exist = memoryCache.users.find(u => u.username === username);
+    if (exist) {
+        return res.status(400).json({ error: 'Tài khoản đã tồn tại!' });
+    }
+
+    const newUser = {
+        username,
+        password,
+        Name: Name || username,
+        KNB: 100
+    };
+
+    memoryCache.users.push(newUser);
+    hasChanges = true;
+
+    res.json({ success: true, message: 'Đăng ký thành công!', user: { username: newUser.username, Name: newUser.Name, KNB: newUser.KNB } });
+});
+
+// 2. API Đăng nhập
+app.post('/api/login', async (req, res) => {
+    await loadDataToMemory();
+    const { username, password } = req.body;
+
+    const user = memoryCache.users.find(u => u.username === username && u.password === password);
+    if (!user) {
+        return res.status(401).json({ error: 'Sai tài khoản hoặc mật khẩu!' });
+    }
+
+    res.json({ 
+        success: true, 
+        message: 'Đăng nhập thành công!', 
+        user: { 
+            username: user.username, 
+            Name: user.Name, 
+            KNB: user.KNB 
+        } 
+    });
+});
+
+// 3. API Xem video
+app.get('/api/video/:slug', async (req, res) => {
+    await loadDataToMemory();
+    const slug = req.params.slug;
+    const video = memoryCache.videos[slug];
+
+    if (!video) {
+        return res.status(404).json({ error: 'Không tìm thấy video!' });
+    }
+
+    video.view += 1;
+    hasChanges = true;
+
+    res.json({ slug, ...video });
+});
+
+// 4. API Lấy tin nhắn chat
 app.get('/api/chats', async (req, res) => {
     await loadDataToMemory();
     res.json({ success: true, chats: memoryCache.chats });
 });
 
-// API Gửi tin nhắn mới từ người dùng lên RAM
+// 5. API Gửi tin nhắn chat
 app.post('/api/chats', async (req, res) => {
     await loadDataToMemory();
     const { sender, message } = req.body;
 
     if (!message || message.trim() === "") {
-        return res.status(400).json({ error: 'Nội dung tin nhắn không được để trống!' });
+        return res.status(400).json({ error: 'Nội dung tin nhắn trống!' });
     }
 
     const newChat = {
-        sender: sender || "Khách ẩn danh",
+        sender: sender || "Khách",
         message: message.trim(),
         time: new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
     };
 
-    // Thêm vào đầu danh sách chat trên RAM
     memoryCache.chats.unshift(newChat);
-
-    // Giới hạn tối đa 50 câu mới nhất
-    if (memoryCache.chats.length > 50) {
-        memoryCache.chats.pop();
-    }
+    if (memoryCache.chats.length > 50) memoryCache.chats.pop();
 
     res.json({ success: true, chat: newChat });
-});
-
-// (Các API video, login, register giữ nguyên như cũ...)
-app.get('/api/video/:slug', async (req, res) => {
-    await loadDataToMemory();
-    const video = memoryCache.videos[req.params.slug];
-    if (!video) return res.status(404).json({ error: 'Không tìm thấy video!' });
-    video.view += 1;
-    res.json({ slug: req.params.slug, ...video });
 });
 
 const PORT = process.env.PORT || 10000;
