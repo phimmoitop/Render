@@ -4,31 +4,28 @@ const fetch = require('node-fetch');
 
 const app = express();
 app.use(express.json());
-app.use(cors());
+app.use(cors()); // Mở CORS tạm thời cho dễ test
 
-// URL Web App của Google Apps Script (Thay link của bạn vào đây)
-const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwUVB8WymMzvP_N0-xifg2a-3Bs3Wjp5pfmnCqhhFR1nRwNrPOz9Cr2eF1FmiCmILFh/exec';
+const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwbhvD2fULvgytKV9epC8_df4UOuzSAsrSi_uJNDyTJqfP0sYWK7Hb50iPenHkzudrg/exec';
 
-// --- BỘ NHỚ RAM TẠM THỜI (IN-MEMORY CACHE) ---
+// BỘ NHỚ RAM TẠM THỜI (IN-MEMORY CACHE)
 let memoryCache = {
-    videos: {},       // Lưu danh sách video theo slug/id: { "tv-1": { banner: "...", link: "...", view: 10 } }
-    users: [],        // Lưu danh sách thành viên đăng ký tạm
-    isLoaded: cF = false // Trạng thái đã load dữ liệu từ Sheets lên RAM chưa
+    videos: {},       // { "slug": { banner, link, view } }
+    users: [],        // [ { username, password, Name, KNB }, ... ]
+    isLoaded: false
 };
 
-// Cờ đánh dấu RAM có thay đổi so với Sheets hay không để tiết kiệm request sync
 let hasChanges = false;
 
-// --- 1. HÀM TẢI DỮ LIỆU TỪ GOOGLE SHEETS VÀO RAM ---
+// 1. Tải dữ liệu từ Google Sheets vào RAM
 async function loadDataToMemory() {
-    if (memoryCache.isLoaded) return; // Nếu đã load rồi thì bỏ qua
+    if (memoryCache.isLoaded) return;
     
-    console.log('🔄 Đang kéo dữ liệu từ Google Sheets vào RAM...');
+    console.log('🔄 Đang kéo dữ liệu (Videos & Accounts) từ Google Sheets vào RAM...');
     try {
         const response = await fetch(`${APPS_SCRIPT_URL}?action=getData`);
         const data = await response.json();
         
-        // Giả sử data trả về từ Sheets là mảng các video [{slug, banner, link, view}, ...]
         if (Array.isArray(data.videos)) {
             data.videos.forEach(item => {
                 memoryCache.videos[item.slug] = {
@@ -43,26 +40,25 @@ async function loadDataToMemory() {
         }
 
         memoryCache.isLoaded = true;
-        console.log('✅ Đã nạp dữ liệu vào RAM thành công!');
+        console.log('✅ Đã nạp toàn bộ dữ liệu vào RAM thành công!');
     } catch (error) {
-        console.error('❌ Lỗi khi load dữ liệu từ Sheets:', error);
+        console.error('❌ Lỗi load dữ liệu:', error);
     }
 }
 
-// --- 2. HÀM ĐỒNG BỘ ĐỊNH KỲ VỀ GOOGLE SHEETS (5 PHÚT/LẦN) ---
+// 2. Đồng bộ định kỳ 5 phút về Google Sheets
 setInterval(async () => {
     if (!hasChanges) {
-        console.log('💤 RAM không có thay đổi gì mới, bỏ qua lượt đồng bộ.');
+        console.log('💤 RAM không có thay đổi mới, bỏ qua sync.');
         return;
     }
 
-    console.log('⏳ Đang đồng bộ dữ liệu thay đổi từ RAM về Google Sheets...');
+    console.log('⏳ Đang đồng bộ thay đổi từ RAM về Google Sheets...');
     try {
         const payload = {
             action: 'syncData',
             videos: Object.keys(memoryCache.videos).map(slug => ({
-                slug: slug,
-                ...memoryCache.videos[slug]
+                slug, ...memoryCache.videos[slug]
             })),
             users: memoryCache.users
         };
@@ -75,61 +71,47 @@ setInterval(async () => {
 
         const result = await response.json();
         if (result.success) {
-            hasChanges = false; // Reset cờ sau khi lưu thành công
+            hasChanges = false;
             console.log('✅ Đồng bộ về Google Sheets thành công!');
-        } else {
-            console.error('⚠️ Google Sheets phản hồi lỗi:', result);
         }
     } catch (error) {
-        console.error('❌ Lỗi kết nối khi đồng bộ về Sheets:', error);
+        console.error('❌ Lỗi đồng bộ:', error);
     }
-}, 5 * 60 * 1000); // 5 phút = 5 * 60 * 1000 ms
+}, 5 * 60 * 1000);
 
-// --- 3. CÁC API PHỤC VỤ CLIENT (BLOGSPOT / HTML TEST) ---
+// --- API ROUTES ---
 
-// API Kiểm tra server sống
 app.get('/', (req, res) => {
     res.send({ status: 'Server is running', cacheLoaded: memoryCache.isLoaded });
 });
 
-// API Xem bài viết theo ID/Slug (Lấy từ RAM + Tăng View ngầm)
-app.get('/api/video/:slug', async (req, res) => {
-    await loadDataToMemory(); // Đảm bảo RAM đã có dữ liệu
-
-    const slug = req.params.slug;
-    const video = memoryCache.videos[slug];
-
-    if (!video) {
-        return res.status(404).json({ error: 'Không tìm thấy video!' });
-    }
-
-    // Tăng view trực tiếp trên RAM (Siêu nhanh)
-    video.view += 1;
-    hasChanges = true; // Đánh dấu RAM đã thay đổi để tí nữa đồng bộ
-
-    res.json({
-        slug: slug,
-        banner: video.banner,
-        link: video.link,
-        view: video.view
-    });
-});
-
-// API Đăng ký thành viên
+// API Đăng ký tài khoản
 app.post('/api/register', async (req, res) => {
     await loadDataToMemory();
-    const { username, password } = req.body;
+    const { username, password, Name } = req.body;
 
-    // Kiểm tra tồn tại
+    if (!username || !password) {
+        return res.status(400).json({ error: 'Thiếu tài khoản hoặc mật khẩu!' });
+    }
+
+    // Kiểm tra trùng username trên RAM
     const exist = memoryCache.users.find(u => u.username === username);
     if (exist) {
         return res.status(400).json({ error: 'Tài khoản đã tồn tại!' });
     }
 
-    memoryCache.users.push({ username, password });
+    // Thêm user mới vào RAM (Tặng mặc định 100 KNB làm quà chào mừng)
+    const newUser = {
+        username,
+        password,
+        Name: Name || username,
+        KNB: 100
+    };
+
+    memoryCache.users.push(newUser);
     hasChanges = true; // Đánh dấu để sync về Sheets
 
-    res.json({ success: true, message: 'Đăng ký thành công!' });
+    res.json({ success: true, message: 'Đăng ký thành công!', user: { username: newUser.username, Name: newUser.Name, KNB: newUser.KNB } });
 });
 
 // API Đăng nhập
@@ -137,16 +119,40 @@ app.post('/api/login', async (req, res) => {
     await loadDataToMemory();
     const { username, password } = req.body;
 
+    // Tìm trong RAM (Cực nhanh, 0ms)
     const user = memoryCache.users.find(u => u.username === username && u.password === password);
     if (!user) {
         return res.status(401).json({ error: 'Sai tài khoản hoặc mật khẩu!' });
     }
 
-    res.json({ success: true, message: 'Đăng nhập thành công!', user: { username } });
+    res.json({ 
+        success: true, 
+        message: 'Đăng nhập thành công!', 
+        user: { 
+            username: user.username, 
+            Name: user.Name, 
+            KNB: user.KNB 
+        } 
+    });
 });
 
-// Khởi động Server
-const PORT = process.env.PORT || 3000;
+// API Xem video theo Slug (Tăng View trên RAM)
+app.get('/api/video/:slug', async (req, res) => {
+    await loadDataToMemory();
+    const slug = req.params.slug;
+    const video = memoryCache.videos[slug];
+
+    if (!video) {
+        return res.status(404).json({ error: 'Không tìm thấy video!' });
+    }
+
+    video.view += 1;
+    hasChanges = true;
+
+    res.json({ slug, ...video });
+});
+
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
     console.log(`🚀 Server đang chạy tại cổng ${PORT}`);
 });
