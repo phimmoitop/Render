@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
+const crypto = require('crypto');
 
 const app = express();
 app.use(express.json());
@@ -17,6 +18,13 @@ let memoryCache = {
 };
 
 let hasChanges = false;
+const sessions = new Map();
+
+function getSessionUser(req) {
+    const token = (req.headers.authorization || '').replace(/^Bearer\s+/i, '');
+    const username = sessions.get(token);
+    return username ? memoryCache.users.find(user => user.username === username) : null;
+}
 
 // --- KHO 30 CÂU CHAT DẠO ---
 const RANDOM_CHAT_POOL = [
@@ -154,12 +162,27 @@ app.post('/api/login', async (req, res) => {
     res.json({ 
         success: true, 
         message: 'Đăng nhập thành công!', 
+        token: (() => { const token = crypto.randomBytes(32).toString('hex'); sessions.set(token, user.username); return token; })(),
         user: { 
             username: user.username, 
             Name: user.Name, 
             KNB: user.KNB 
         } 
     });
+});
+
+// Thông tin tài khoản hiện tại của phiên đăng nhập
+app.get('/api/me', async (req, res) => {
+    await loadDataToMemory();
+    const user = getSessionUser(req);
+    if (!user) return res.status(401).json({ error: 'Phiên đăng nhập không hợp lệ hoặc đã hết hạn.' });
+    res.json({ success: true, user: { username: user.username, Name: user.Name, KNB: user.KNB } });
+});
+
+// Danh sách video đang được cache trong RAM
+app.get('/api/videos', async (req, res) => {
+    await loadDataToMemory();
+    res.json({ success: true, videos: Object.keys(memoryCache.videos).map(slug => ({ slug, ...memoryCache.videos[slug] })) });
 });
 
 // 3. API Xem video
