@@ -2,10 +2,14 @@ const express = require('express');
 const cors = require('cors');
 const fetch = require('node-fetch');
 const crypto = require('crypto');
+const http = require('http');
+const { Server } = require('socket.io');
 
 const app = express();
 app.use(express.json());
 app.use(cors());
+const httpServer = http.createServer(app);
+const io = new Server(httpServer, { cors: { origin: '*' } });
 
 const APPS_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbwbhvD2fULvgytKV9epC8_df4UOuzSAsrSi_uJNDyTJqfP0sYWK7Hb50iPenHkzudrg/exec'; // Nhớ điền link Apps Script của bạn vào đây
 
@@ -64,13 +68,114 @@ const RANDOM_CHAT_POOL = [
 setInterval(() => {
     const randomMsg = RANDOM_CHAT_POOL[Math.floor(Math.random() * RANDOM_CHAT_POOL.length)];
     const botChat = {
-        sender: "🤖 Bot Hệ Thống",
+        sender: "Liễu Như Yên",
         message: randomMsg,
         time: new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
     };
     memoryCache.chats.unshift(botChat);
     if (memoryCache.chats.length > 50) memoryCache.chats.pop();
+    io.emit('chat:new', botChat);
 }, 10 * 60 * 1000);
+
+function publicUser(user) {
+    return { username: user.username, Name: user.Name, KNB: user.KNB };
+}
+
+function socketUser(token) {
+    const username = sessions.get(String(token || ''));
+    return username ? memoryCache.users.find(user => user.username === username) : null;
+}
+
+function replyError(ack, message) {
+    if (typeof ack === 'function') ack({ success: false, error: message });
+}
+
+io.on('connection', socket => {
+    console.log(`🔌 Socket kết nối: ${socket.id}`);
+
+    socket.on('auth:register', async (payload = {}, ack) => {
+        try {
+            await loadDataToMemory();
+            const username = String(payload.username || '').trim();
+            const password = String(payload.password || '');
+            const Name = String(payload.Name || '').trim();
+            if (username.length < 3 || username.length > 32 || !/^[\p{L}\p{N}_.-]+$/u.test(username)) return replyError(ack, 'Tên đăng nhập cần 3–32 ký tự (chữ, số, dấu chấm, gạch dưới hoặc gạch ngang).');
+            if (password.length < 6) return replyError(ack, 'Mật khẩu cần có ít nhất 6 ký tự.');
+            if (!Name || Name.length > 50) return replyError(ack, 'Vui lòng nhập tên hiển thị tối đa 50 ký tự.');
+            if (memoryCache.users.some(user => user.username.toLowerCase() === username.toLowerCase())) return replyError(ack, 'Tên đăng nhập đã được sử dụng.');
+            const user = { username, password, Name, KNB: 100 };
+            memoryCache.users.push(user);
+            hasChanges = true;
+            if (typeof ack === 'function') ack({ success: true, message: 'Đăng ký thành công!', user: publicUser(user) });
+        } catch (error) { replyError(ack, 'Không thể đăng ký lúc này. Vui lòng thử lại.'); }
+    });
+
+    socket.on('auth:login', async (payload = {}, ack) => {
+        try {
+            await loadDataToMemory();
+            const user = memoryCache.users.find(item => item.username === String(payload.username || '').trim() && item.password === String(payload.password || ''));
+            if (!user) return replyError(ack, 'Sai tên đăng nhập hoặc mật khẩu.');
+            const token = crypto.randomBytes(32).toString('hex');
+            sessions.set(token, user.username);
+            if (typeof ack === 'function') ack({ success: true, token, user: publicUser(user) });
+        } catch (error) { replyError(ack, 'Không thể đăng nhập lúc này. Vui lòng thử lại.'); }
+    });
+
+    socket.on('auth:check', async ({ token } = {}, ack) => {
+        try {
+            await loadDataToMemory();
+            const user = socketUser(token);
+            if (!user) return replyError(ack, 'Phiên đăng nhập không hợp lệ hoặc đã hết hạn.');
+            if (typeof ack === 'function') ack({ success: true, user: publicUser(user) });
+        } catch (error) { replyError(ack, 'Không thể xác thực phiên đăng nhập.'); }
+    });
+
+    socket.on('auth:logout', ({ token } = {}, ack) => {
+        sessions.delete(String(token || ''));
+        if (typeof ack === 'function') ack({ success: true });
+    });
+
+    socket.on('videos:list', async (ack) => {
+        try {
+            await loadDataToMemory();
+            if (typeof ack === 'function') ack({ success: true, videos: Object.keys(memoryCache.videos).map(slug => ({ slug, ...memoryCache.videos[slug] })) });
+        } catch (error) { replyError(ack, 'Không tải được danh sách video.'); }
+    });
+
+    socket.on('video:view', async ({ slug } = {}, ack) => {
+        try {
+            await loadDataToMemory();
+            const video = memoryCache.videos[String(slug || '')];
+            if (!video) return replyError(ack, 'Không tìm thấy video.');
+            video.view = (Number(video.view) || 0) + 1;
+            hasChanges = true;
+            if (typeof ack === 'function') ack({ success: true, video: { slug, ...video } });
+        } catch (error) { replyError(ack, 'Không thể mở video.'); }
+    });
+
+    socket.on('chat:join', async (ack) => {
+        try {
+            await loadDataToMemory();
+            socket.join('lobby');
+            if (typeof ack === 'function') ack({ success: true, chats: memoryCache.chats });
+        } catch (error) { replyError(ack, 'Không tải được tin nhắn.'); }
+    });
+
+    socket.on('chat:send', ({ token, message } = {}, ack) => {
+        const user = socketUser(token);
+        if (!user) return replyError(ack, 'Phiên đăng nhập hết hạn. Hãy đăng nhập lại.');
+        const cleanMessage = String(message || '').trim();
+        if (!cleanMessage) return replyError(ack, 'Nội dung tin nhắn đang trống.');
+        if (cleanMessage.length > 500) return replyError(ack, 'Tin nhắn tối đa 500 ký tự.');
+        const chat = { sender: user.Name || user.username, message: cleanMessage, time: new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) };
+        memoryCache.chats.unshift(chat);
+        if (memoryCache.chats.length > 50) memoryCache.chats.pop();
+        io.to('lobby').emit('chat:new', chat);
+        if (typeof ack === 'function') ack({ success: true });
+    });
+
+    socket.on('disconnect', reason => console.log(`🔌 Socket ngắt: ${socket.id} (${reason})`));
+});
 
 // --- HÀM TẢI DỮ LIỆU TỪ GOOGLE SHEETS VÀO RAM ---
 async function loadDataToMemory() {
@@ -229,6 +334,6 @@ app.post('/api/chats', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => {
+httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Server đang chạy tại cổng ${PORT}`);
 });
