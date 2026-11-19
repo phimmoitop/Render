@@ -36,7 +36,7 @@ const RANDOM_CHAT_POOL = [
     "Có ai đang xem phim gì hay không giới thiệu với.",
     "Web chạy mượt phết, tốc độ load 0ms luôn ae ơi.",
     "Vừa nạp thêm mấy trăm KNB xong, sướng thế.",
-    "Admin Đẹp Zai ơi ra mắt thêm tính năng mới đi!",
+    "Admin ơi ra mắt thêm tính năng mới đi!",
     "Có ai thức khuya giống mình không điểm danh nào.",
     "Hệ thống cache RAM này đỉnh cao thật sự.",
     "Chúc mọi người một ngày tốt lành nhé.",
@@ -135,7 +135,7 @@ io.on('connection', socket => {
         if (typeof ack === 'function') ack({ success: true });
     });
 
-    socket.on('videos:list', async (ack) => {
+    socket.on('videos:list', async (_payload, ack) => {
         try {
             await loadDataToMemory();
             if (typeof ack === 'function') ack({ success: true, videos: Object.keys(memoryCache.videos).map(slug => ({ slug, ...memoryCache.videos[slug] })) });
@@ -153,7 +153,7 @@ io.on('connection', socket => {
         } catch (error) { replyError(ack, 'Không thể mở video.'); }
     });
 
-    socket.on('chat:join', async (ack) => {
+    socket.on('chat:join', async (_payload, ack) => {
         try {
             await loadDataToMemory();
             socket.join('lobby');
