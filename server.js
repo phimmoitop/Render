@@ -36,7 +36,7 @@ const RANDOM_CHAT_POOL = [
     "Có ai đang xem phim gì hay không giới thiệu với.",
     "Web chạy mượt phết, tốc độ load 0ms luôn ae ơi.",
     "Vừa nạp thêm mấy trăm KNB xong, sướng thế.",
-    "Admin ơi ra mắt thêm tính năng mới đi!",
+    "Admin Đẹp Zai ơi ra mắt thêm tính năng mới đi!",
     "Có ai thức khuya giống mình không điểm danh nào.",
     "Hệ thống cache RAM này đỉnh cao thật sự.",
     "Chúc mọi người một ngày tốt lành nhé.",
